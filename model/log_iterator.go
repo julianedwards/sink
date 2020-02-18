@@ -596,6 +596,11 @@ type LogIteratorReaderOptions struct {
 	// If PrintTime is also set to true, priority will be printed first:
 	// 		[P:100] [2006/01/02 15:04:05.000] This is a long line.
 	PrintPriority bool
+	// StartAfterLine, when non-empty, is used to start reading after the
+	// first matching log line. The log line should not include the
+	// priority nor the timestamp. If no match is found, nothing will be
+	// read.
+	StartAfterLine string
 }
 
 // NewLogIteratorReader returns an io.Reader that reads the log lines from the
@@ -607,35 +612,43 @@ func NewLogIteratorReader(ctx context.Context, it LogIterator, opts LogIteratorR
 		}
 
 		return &logIteratorTailReader{
-			ctx:           ctx,
-			it:            it,
-			n:             opts.TailN,
-			printTime:     opts.PrintTime,
-			printPriority: opts.PrintPriority,
+			ctx:            ctx,
+			it:             it,
+			n:              opts.TailN,
+			printTime:      opts.PrintTime,
+			printPriority:  opts.PrintPriority,
+			startAfterLine: opts.StartAfterLine,
 		}
 	}
 
 	return &logIteratorReader{
-		ctx:           ctx,
-		it:            it,
-		limit:         opts.Limit,
-		printTime:     opts.PrintTime,
-		printPriority: opts.PrintPriority,
+		ctx:            ctx,
+		it:             it,
+		limit:          opts.Limit,
+		printTime:      opts.PrintTime,
+		printPriority:  opts.PrintPriority,
+		startAfterLine: opts.StartAfterLine,
 	}
 }
 
 type logIteratorReader struct {
-	ctx           context.Context
-	it            LogIterator
-	lineCount     int
-	limit         int
-	leftOver      []byte
-	printTime     bool
-	printPriority bool
+	ctx            context.Context
+	it             LogIterator
+	lineCount      int
+	limit          int
+	leftOver       []byte
+	printTime      bool
+	printPriority  bool
+	startAfterLine string
+	start          bool
 }
 
 func (r *logIteratorReader) Read(p []byte) (int, error) {
 	n := 0
+
+	if r.startAfterLine == "" {
+		r.start = true
+	}
 
 	if r.leftOver != nil {
 		data := r.leftOver
@@ -647,12 +660,20 @@ func (r *logIteratorReader) Read(p []byte) (int, error) {
 	}
 
 	for r.it.Next(r.ctx) {
+		data := r.it.Item().Data
+
+		if !r.start {
+			if r.startAfterLine == data {
+				r.start = true
+			}
+			continue
+		}
+
 		r.lineCount++
 		if r.limit > 0 && r.lineCount > r.limit {
 			break
 		}
 
-		data := r.it.Item().Data
 		if r.printTime {
 			data = fmt.Sprintf("[%s] %s",
 				r.it.Item().Timestamp.Format("2006/01/02 15:04:05.000"), data)
@@ -692,15 +713,21 @@ func (r *logIteratorReader) writeToBuffer(data, buffer []byte, n int) int {
 }
 
 type logIteratorTailReader struct {
-	ctx           context.Context
-	it            LogIterator
-	n             int
-	printTime     bool
-	printPriority bool
-	r             io.Reader
+	ctx            context.Context
+	it             LogIterator
+	n              int
+	printTime      bool
+	printPriority  bool
+	r              io.Reader
+	startAfterLine string
+	start          bool
 }
 
 func (r *logIteratorTailReader) Read(p []byte) (int, error) {
+	if r.startAfterLine == "" {
+		r.start = true
+	}
+
 	if r.r == nil {
 		if err := r.getReader(); err != nil {
 			return 0, errors.Wrap(err, "problem reading data")
@@ -716,8 +743,22 @@ func (r *logIteratorTailReader) Read(p []byte) (int, error) {
 
 func (r *logIteratorTailReader) getReader() error {
 	var lines string
-	for i := 0; i < r.n && r.it.Next(r.ctx); i++ {
+	var lineCount int
+	for r.it.Next(r.ctx) {
 		data := r.it.Item().Data
+
+		if !r.start {
+			if data == r.startAfterLine {
+				r.start = true
+			}
+			continue
+		}
+
+		lineCount++
+		if lineCount > r.n {
+			break
+		}
+
 		if r.printTime {
 			data = fmt.Sprintf("[%s] %s",
 				r.it.Item().Timestamp.Format("2006/01/02 15:04:05.000"), data)

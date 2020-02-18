@@ -501,6 +501,46 @@ func TestLogIteratorReader(t *testing.T) {
 		assert.Zero(t, n)
 		assert.Error(t, err)
 	})
+	t.Run("WithStartAfterLine", func(t *testing.T) {
+		opts := LogIteratorReaderOptions{
+			PrintTime:      true,
+			PrintPriority:  true,
+			Limit:          40,
+			StartAfterLine: lines[5].Data,
+		}
+		r := NewLogIteratorReader(ctx, NewBatchedLogIterator(bucket, chunks, 2, timeRange), opts)
+		nTotal := 0
+		readData := []byte{}
+		p := make([]byte, 22)
+		for {
+			n, err := r.Read(p)
+			nTotal += n
+			readData = append(readData, p[:n]...)
+			assert.True(t, n >= 0)
+			assert.True(t, n <= len(p))
+			if err == io.EOF {
+				break
+			}
+			require.NoError(t, err)
+		}
+
+		current := 6
+		readLines := strings.Split(string(readData), "\n")
+		assert.Equal(t, "", readLines[len(readLines)-1])
+		for _, line := range readLines[:len(readLines)-1] {
+			require.True(t, current < len(lines))
+			formattedTime := lines[current].Timestamp.Format("2006/01/02 15:04:05.000")
+			expectedLine := fmt.Sprintf("[P:%3d] [%s] %s", lines[current].Priority, formattedTime, lines[current].Data)
+			assert.Equal(t, expectedLine, line+"\n")
+			current++
+		}
+		assert.Equal(t, opts.Limit+6, current)
+
+		n, err := r.Read(p)
+		assert.Zero(t, n)
+		assert.Error(t, err)
+
+	})
 	t.Run("EmptyBuffer", func(t *testing.T) {
 		opts := LogIteratorReaderOptions{}
 		r := NewLogIteratorReader(ctx, NewBatchedLogIterator(bucket, chunks, 2, timeRange), opts)
@@ -674,10 +714,47 @@ func TestLogIteratorTailReader(t *testing.T) {
 			formattedTime := lines[current].Timestamp.Format("2006/01/02 15:04:05.000")
 			expectedLine := fmt.Sprintf("[P:%3d] [%s] %s", lines[current].Priority, formattedTime, lines[current].Data)
 			assert.Equal(t, expectedLine, line+"\n")
-			fmt.Println(line)
 			current++
 		}
 		assert.Equal(t, len(lines), current)
+
+		n, err := r.Read(p)
+		assert.Zero(t, n)
+		assert.Error(t, err)
+	})
+	t.Run("WithStartAfterLine", func(t *testing.T) {
+		it := NewBatchedLogIterator(bucket, chunks, 2, timeRange)
+		opts := LogIteratorReaderOptions{
+			TailN:          42,
+			PrintTime:      true,
+			PrintPriority:  true,
+			StartAfterLine: lines[len(lines)-17].Data,
+		}
+		r := NewLogIteratorReader(ctx, it, opts)
+		readData := []byte{}
+		p := make([]byte, 4096)
+		for {
+			n, err := r.Read(p)
+			readData = append(readData, p[:n]...)
+			assert.True(t, n >= 0)
+			assert.True(t, n <= len(p))
+			if err == io.EOF {
+				break
+			}
+			require.NoError(t, err)
+		}
+
+		current := 41
+		readLines := strings.Split(string(readData), "\n")
+		assert.Equal(t, "", readLines[len(readLines)-1])
+		for _, line := range readLines[:len(readLines)-1] {
+			require.True(t, current < len(lines))
+			formattedTime := lines[current].Timestamp.Format("2006/01/02 15:04:05.000")
+			expectedLine := fmt.Sprintf("[P:%3d] [%s] %s", lines[current].Priority, formattedTime, lines[current].Data)
+			assert.Equal(t, expectedLine, line+"\n")
+			current++
+		}
+		assert.Equal(t, len(lines)-17, current)
 
 		n, err := r.Read(p)
 		assert.Zero(t, n)
